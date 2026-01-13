@@ -1,0 +1,23 @@
+# Raw captures
+screenshots/
+
+# Output data
+output/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+.env
+
+# uv
+.python-version
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+CLAUDE.md
+*.png
