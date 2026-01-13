@@ -9,8 +9,6 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from paddleocr import PaddleOCR
-
 from src import regions
 from src.utils import (
     SCREENSHOTS_DIR,
@@ -20,18 +18,45 @@ from src.utils import (
     load_image,
 )
 
-# Initialize PaddleOCR (use_angle_cls for rotated text, lang='en' for English)
-ocr = PaddleOCR(use_angle_cls=False, lang='en', show_log=False)
+# Lazy-loaded OCR instance
+_ocr = None
+
+
+def get_ocr():
+    """Get or initialize PaddleOCR instance."""
+    global _ocr
+    if _ocr is None:
+        from paddleocr import PaddleOCR
+        print("Initializing PaddleOCR...")
+        _ocr = PaddleOCR(lang='en')
+    return _ocr
 
 
 def ocr_crop(crop):
-    """Run OCR on a crop and return the text."""
-    result = ocr.ocr(crop, cls=False)
-    if result and result[0]:
-        # Extract text from result
-        texts = [line[1][0] for line in result[0]]
-        return ' '.join(texts)
+    """Run OCR on a crop and return the raw text."""
+    ocr = get_ocr()
+    result = ocr.predict(crop)
+    # Result is a list of dicts, first element contains 'rec_texts'
+    if result and len(result) > 0:
+        first = result[0]
+        if isinstance(first, dict) and 'rec_texts' in first:
+            texts = first['rec_texts']
+            if texts:
+                return ' '.join(texts)
     return ''
+
+
+def parse_number(text: str) -> int | None:
+    """Parse a number from OCR text, handling commas."""
+    if not text:
+        return None
+    # Remove commas and whitespace
+    cleaned = text.replace(',', '').replace(' ', '').strip()
+    # Try to parse as integer
+    try:
+        return int(cleaned)
+    except ValueError:
+        return None
 
 
 def main() -> None:
@@ -53,43 +78,32 @@ def main() -> None:
     # Detect edges and calculate columns
     left_edge, right_edge = detect_scoreboard_edges(image)
     columns = calculate_column_positions(left_edge, right_edge)
+    print(f"Scoreboard width: {right_edge - left_edge}px")
 
     # Test OCR on various columns
     stat_columns = ["elims", "assists", "deaths", "damage", "healing", "mit"]
 
-    print("\n=== Team 1 (Blue) ===")
-    for row in range(5):
-        print(f"\nRow {row}:")
+    for team in [1, 2]:
+        team_name = "Team 1 (Blue)" if team == 1 else "Team 2 (Yellow)"
+        print(f"\n{'='*50}")
+        print(f"{team_name}")
+        print('='*50)
 
-        # Player name
-        name_crop = crop_cell(image, 1, row, "name", columns)
-        name = ocr_crop(name_crop)
-        print(f"  Name: {name}")
+        for row in range(5):
+            # Player name
+            name_crop = crop_cell(image, team, row, "name", columns)
+            name = ocr_crop(name_crop)
 
-        # Stats
-        stats = []
-        for col in stat_columns:
-            crop = crop_cell(image, 1, row, col, columns)
-            text = ocr_crop(crop)
-            stats.append(f"{col}={text}")
-        print(f"  Stats: {', '.join(stats)}")
+            # Stats
+            stats = {}
+            for col in stat_columns:
+                crop = crop_cell(image, team, row, col, columns)
+                text = ocr_crop(crop)
+                stats[col] = parse_number(text)
 
-    print("\n=== Team 2 (Yellow) ===")
-    for row in range(5):
-        print(f"\nRow {row}:")
-
-        # Player name
-        name_crop = crop_cell(image, 2, row, "name", columns)
-        name = ocr_crop(name_crop)
-        print(f"  Name: {name}")
-
-        # Stats
-        stats = []
-        for col in stat_columns:
-            crop = crop_cell(image, 2, row, col, columns)
-            text = ocr_crop(crop)
-            stats.append(f"{col}={text}")
-        print(f"  Stats: {', '.join(stats)}")
+            # Format output
+            stats_str = ', '.join(f"{k}={v}" for k, v in stats.items())
+            print(f"  Row {row}: {name:15s} | {stats_str}")
 
 
 if __name__ == "__main__":

@@ -201,8 +201,66 @@ def detect_ult_status(crop: Image) -> tuple[bool, int | None]:
 
 
 # -----------------------------------------------------------------------------
-# OCR Functions (TODO)
+# OCR Functions
 # -----------------------------------------------------------------------------
+
+# Lazy-loaded OCR instance
+_ocr_instance = None
+
+
+def _get_ocr():
+    """Get or initialize PaddleOCR instance (lazy loading)."""
+    global _ocr_instance
+    if _ocr_instance is None:
+        from paddleocr import PaddleOCR
+        _ocr_instance = PaddleOCR(lang='en')
+    return _ocr_instance
+
+
+def _preprocess_for_ocr(crop: Image, scale: int = 3) -> Image:
+    """Preprocess crop for OCR using saturation extraction.
+
+    Extracts white text from colored backgrounds (blue/yellow).
+    White has low saturation, so we threshold on saturation channel.
+    Upscales for better OCR accuracy on small crops.
+    """
+    # Upscale first for better quality
+    if scale > 1:
+        crop = cv2.resize(crop, None, fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC)
+
+    hsv = cv2.cvtColor(crop, cv2.COLOR_BGR2HSV)
+    saturation = hsv[:, :, 1]
+
+    # Low saturation = white text, high saturation = colored background
+    # Threshold so text becomes black on white (better for OCR)
+    _, binary = cv2.threshold(saturation, 30, 255, cv2.THRESH_BINARY)
+
+    # Dilate to thicken thin characters (like italic "I")
+    # We want to erode because text is black on white (erode black = thicken)
+    kernel = np.ones((2, 2), np.uint8)
+    binary = cv2.erode(binary, kernel, iterations=1)
+
+    # Convert back to BGR (3 channel) for PaddleOCR
+    return cv2.cvtColor(binary, cv2.COLOR_GRAY2BGR)
+
+
+def _run_ocr(crop: Image, preprocess: bool = True) -> str:
+    """Run OCR on a crop and return raw text."""
+    ocr = _get_ocr()
+
+    # Apply preprocessing for better text extraction
+    if preprocess:
+        crop = _preprocess_for_ocr(crop)
+
+    result = ocr.predict(crop)
+    # Result is a list of dicts, first element contains 'rec_texts'
+    if result and len(result) > 0:
+        first = result[0]
+        if isinstance(first, dict) and 'rec_texts' in first:
+            texts = first['rec_texts']
+            if texts:
+                return ' '.join(texts)
+    return ''
 
 
 def ocr_text(crop: Image) -> str:
@@ -214,8 +272,7 @@ def ocr_text(crop: Image) -> str:
     Returns:
         Extracted text string
     """
-    # TODO: Implement using PaddleOCR
-    return ""
+    return _run_ocr(crop)
 
 
 def ocr_number(crop: Image) -> int | None:
@@ -227,11 +284,16 @@ def ocr_number(crop: Image) -> int | None:
     Returns:
         Parsed integer or None if extraction failed
     """
-    # TODO: Implement using PaddleOCR with number parsing
-    # Should handle:
-    # - Comma separators (e.g., "1,234")
-    # - Empty/missing values
-    return None
+    text = _run_ocr(crop)
+    if not text:
+        return None
+    # Remove commas and whitespace
+    cleaned = text.replace(',', '').replace(' ', '').strip()
+    # Try to parse as integer
+    try:
+        return int(cleaned)
+    except ValueError:
+        return None
 
 
 # -----------------------------------------------------------------------------
@@ -296,14 +358,14 @@ def process_player(
     # ult_crop = crop_cell(image, team, row, "ult", columns)
     # data.ult_ready, data.ult_charge = detect_ult_status(ult_crop)
 
-    # Name OCR (TODO)
-    # name_crop = crop_cell(image, team, row, "name", columns)
-    # data.name = ocr_text(name_crop)
+    # Name OCR
+    name_crop = crop_cell(image, team, row, "name", columns)
+    data.name = ocr_text(name_crop)
 
-    # Stats OCR (TODO)
-    # for stat in ["elims", "assists", "deaths", "damage", "healing", "mit"]:
-    #     stat_crop = crop_cell(image, team, row, stat, columns)
-    #     setattr(data, stat, ocr_number(stat_crop))
+    # Stats OCR
+    for stat in ["elims", "assists", "deaths", "damage", "healing", "mit"]:
+        stat_crop = crop_cell(image, team, row, stat, columns)
+        setattr(data, stat, ocr_number(stat_crop))
 
     return data
 
