@@ -1,5 +1,4 @@
 # Raw captures
-screenshots/
 
 # Output data
 output/
@@ -20,4 +19,4 @@ __pycache__/
 *.swp
 
 CLAUDE.md
-*.png
+/output/
