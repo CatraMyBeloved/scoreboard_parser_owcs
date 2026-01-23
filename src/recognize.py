@@ -4,7 +4,8 @@ Handles:
 - Role icon template matching
 - Hero portrait template matching
 - Ult status detection
-- OCR for player names and stats
+- OCR for player names (PaddleOCR)
+- Digit template matching for stats
 """
 
 from dataclasses import dataclass
@@ -165,7 +166,7 @@ def match_role(crop: Image, templates: Templates | None = None) -> TemplateMatch
 HERO_CONFIDENCE_THRESHOLD = 0.7
 
 
-def match_hero(crop: Image, templates: Templates | None = None) -> TemplateMatch:
+def match_hero(crop: Image, templates: Templates | None = None) -> TemplateMatch | None:
     """Match a hero portrait crop against templates.
 
     Uses direct template matching against pre-cropped hero portraits.
@@ -176,16 +177,17 @@ def match_hero(crop: Image, templates: Templates | None = None) -> TemplateMatch
         templates: Optional pre-loaded templates (uses cached if not provided)
 
     Returns:
-        TemplateMatch with hero name and confidence score.
-        Returns "unknown" if confidence is below threshold (e.g., hero is dead/greyed out).
+        TemplateMatch with hero name and confidence score, or None if no confident match
+        (e.g., hero is dead/greyed out).
     """
     if templates is None:
         templates = _template_manager.load_templates("heroes_cropped")
 
     if not templates:
-        return TemplateMatch(name="unknown", confidence=0.0)
+        return None
 
-    best_match = TemplateMatch(name="unknown", confidence=-1.0)
+    best_match: TemplateMatch | None = None
+    best_score = -1.0
 
     for template_name, template in templates.items():
         if template.shape != crop.shape:
@@ -198,12 +200,13 @@ def match_hero(crop: Image, templates: Templates | None = None) -> TemplateMatch
         result = cv2.matchTemplate(crop, template_resized, cv2.TM_CCOEFF_NORMED)
         score = float(result[0, 0])
 
-        if score > best_match.confidence:
+        if score > best_score:
+            best_score = score
             hero_name = template_name.rsplit("_", 1)[0]
             best_match = TemplateMatch(name=hero_name, confidence=score)
 
-    if best_match.confidence < HERO_CONFIDENCE_THRESHOLD:
-        return TemplateMatch(name="unknown", confidence=best_match.confidence)
+    if best_match is None or best_match.confidence < HERO_CONFIDENCE_THRESHOLD:
+        return None
 
     return best_match
 
@@ -256,37 +259,29 @@ def detect_ult_status(crop: Image, templates: Templates | None = None) -> tuple[
             return True, None
 
     # No checkmark found, try OCR for percentage
-    text = _run_ocr(crop)
-    if text:
-        # Extract digits only
-        digits = ''.join(c for c in text if c.isdigit())
-        if digits:
-            try:
-                percentage = int(digits)
-                if 0 <= percentage <= 100:
-                    return False, percentage
-            except ValueError:
-                pass
+    percentage = ocr_ult_charge(crop)
+    if percentage is not None and 0 <= percentage <= 100:
+        return False, percentage
 
     # Fallback: unknown state
     return False, None
 
 
 # -----------------------------------------------------------------------------
-# OCR Functions
+# OCR Functions (PaddleOCR 3.x)
 # -----------------------------------------------------------------------------
 
-# Lazy-loaded OCR instance
-_ocr_instance = None
+# Lazy-loaded PaddleOCR instance
+_paddle_ocr = None
 
 
-def _get_ocr():
+def _get_paddle_ocr():
     """Get or initialize PaddleOCR instance (lazy loading)."""
-    global _ocr_instance
-    if _ocr_instance is None:
+    global _paddle_ocr
+    if _paddle_ocr is None:
         from paddleocr import PaddleOCR
-        _ocr_instance = PaddleOCR(lang='en')
-    return _ocr_instance
+        _paddle_ocr = PaddleOCR(lang="en")
+    return _paddle_ocr
 
 
 def _preprocess_for_ocr(crop: Image, scale: int = 3) -> Image:
@@ -294,43 +289,41 @@ def _preprocess_for_ocr(crop: Image, scale: int = 3) -> Image:
 
     Extracts white text from colored backgrounds (blue/yellow).
     White has low saturation, so we threshold on saturation channel.
-    Upscales for better OCR accuracy on small crops.
+
+    Args:
+        crop: BGR image
+        scale: Upscale factor
+
+    Returns:
+        BGR image ready for OCR
     """
     if scale > 1:
         crop = cv2.resize(crop, None, fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC)
 
     hsv = cv2.cvtColor(crop, cv2.COLOR_BGR2HSV)
     saturation = hsv[:, :, 1]
-
-
     _, binary = cv2.threshold(saturation, 30, 255, cv2.THRESH_BINARY)
-
-
-    kernel = np.ones((2, 2), np.uint8)
-    binary = cv2.erode(binary, kernel, iterations=1)
 
     return cv2.cvtColor(binary, cv2.COLOR_GRAY2BGR)
 
 
-def _run_ocr(crop: Image, preprocess: bool = True) -> str:
+def _run_ocr(crop: Image) -> str:
     """Run OCR on a crop and return raw text."""
-    ocr = _get_ocr()
+    ocr = _get_paddle_ocr()
+    processed = _preprocess_for_ocr(crop)
 
-    if preprocess:
-        crop = _preprocess_for_ocr(crop)
-
-    result = ocr.predict(crop)
+    result = ocr.predict(processed)
     if result and len(result) > 0:
         first = result[0]
-        if isinstance(first, dict) and 'rec_texts' in first:
-            texts = first['rec_texts']
+        if isinstance(first, dict) and "rec_texts" in first:
+            texts = first["rec_texts"]
             if texts:
-                return ' '.join(texts)
-    return ''
+                return " ".join(texts)
+    return ""
 
 
 def ocr_text(crop: Image) -> str:
-    """Extract text from a cropped region using OCR.
+    """Extract text from a cropped region using PaddleOCR.
 
     Args:
         crop: BGR image containing text
@@ -341,21 +334,27 @@ def ocr_text(crop: Image) -> str:
     return _run_ocr(crop)
 
 
-def ocr_number(crop: Image) -> int | None:
-    """Extract a number from a cropped region.
+def ocr_ult_charge(crop: Image) -> int | None:
+    """Extract ult charge percentage from a cropped region.
+
+    Uses PaddleOCR to read the percentage number (digits only).
 
     Args:
-        crop: BGR image containing a number
+        crop: BGR image containing the ult charge percentage
 
     Returns:
-        Parsed integer or None if extraction failed
+        Parsed integer (0-100) or None if extraction failed
     """
     text = _run_ocr(crop)
-    if not text:
+
+    # Extract only digits
+    digits = "".join(c for c in text if c.isdigit())
+
+    if not digits:
         return None
-    cleaned = text.replace(',', '').replace(' ', '').strip()
+
     try:
-        return int(cleaned)
+        return int(digits)
     except ValueError:
         return None
 
@@ -402,7 +401,7 @@ def process_player(
         PlayerData with all extracted fields
     """
     from .utils import crop_cell
-    from . import regions
+    from .digit_matcher import recognize_stat
 
     data = PlayerData(team=team, row=row)
 
@@ -421,12 +420,14 @@ def process_player(
     ult_crop = crop_cell(image, team, row, "ult", columns)
     data.ult_ready, data.ult_charge = detect_ult_status(ult_crop)
 
+    # Player name (PaddleOCR)
     name_crop = crop_cell(image, team, row, "name", columns)
     data.name = ocr_text(name_crop)
 
+    # Stats (digit template matching)
     for stat in ["elims", "assists", "deaths", "damage", "healing", "mit"]:
         stat_crop = crop_cell(image, team, row, stat, columns)
-        setattr(data, stat, ocr_number(stat_crop))
+        setattr(data, stat, recognize_stat(stat_crop))
 
     return data
 

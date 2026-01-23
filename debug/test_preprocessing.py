@@ -1,7 +1,10 @@
-"""Debug script to visualize OCR preprocessing.
+"""Test script for examining preprocessing steps.
+
+Crops and preprocesses a single frame, saving all intermediate steps
+for visual inspection. No OCR is run.
 
 Usage:
-    uv run python debug/test_preprocessing.py [screenshot_path]
+    python debug/test_preprocessing.py [screenshot_path]
 """
 
 import sys
@@ -13,87 +16,142 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from src.utils import (
-    OUTPUT_DIR,
-    SCREENSHOTS_DIR,
+    load_image,
+    save_crop,
+    detect_scoreboard_edges,
     calculate_column_positions,
     crop_cell,
-    detect_scoreboard_edges,
-    load_image,
+    SCREENSHOTS_DIR,
+    OUTPUT_DIR,
 )
 
 
-def preprocess_saturation(crop: np.ndarray, threshold: int = 50) -> np.ndarray:
-    """Extract white text using saturation threshold."""
+# Columns to process
+STAT_COLUMNS = ["name", "ult", "elims", "assists", "deaths", "damage", "healing", "mit"]
+TEMPLATE_COLUMNS = ["role", "hero"]
+
+
+def preprocess_for_ocr(crop: np.ndarray) -> dict[str, np.ndarray]:
+    """Run preprocessing steps and return all intermediate images.
+
+    Pipeline: upscale -> grayscale -> CLAHE -> Otsu inverted
+    """
+    results = {}
+
+    # Step 1: Scale 4x
+    scaled = cv2.resize(crop, None, fx=4, fy=4, interpolation=cv2.INTER_CUBIC)
+    results["1_scaled"] = scaled
+
+    # Step 2: Grayscale
+    gray = cv2.cvtColor(scaled, cv2.COLOR_BGR2GRAY)
+    results["2_gray"] = gray
+
+    # Step 3: CLAHE (Contrast Limited Adaptive Histogram Equalization)
+    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+    enhanced = clahe.apply(gray)
+    results["3_clahe"] = enhanced
+
+    # Step 4: Otsu inverted (auto threshold, white text becomes black)
+    _, otsu_inv = cv2.threshold(enhanced, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+    results["4_otsu_inv"] = otsu_inv
+
+    return results
+
+
+def extract_saturation_binary(crop: np.ndarray) -> np.ndarray:
+    """Extract binary image based on saturation (for role/hero matching)."""
     hsv = cv2.cvtColor(crop, cv2.COLOR_BGR2HSV)
     saturation = hsv[:, :, 1]
-    _, binary = cv2.threshold(saturation, threshold, 255, cv2.THRESH_BINARY)
+    _, binary = cv2.threshold(saturation, 5, 255, cv2.THRESH_BINARY_INV)
     return binary
 
 
-def main() -> None:
-    # Find screenshot to process
-    if len(sys.argv) > 1:
-        screenshot_path = Path(sys.argv[1])
-    else:
-        images = list(SCREENSHOTS_DIR.glob("*.png")) + list(SCREENSHOTS_DIR.glob("*.jpg"))
-        if not images:
-            print(f"No images found in {SCREENSHOTS_DIR}")
-            sys.exit(1)
-        screenshot_path = sorted(images)[0]
-        print(f"No image specified, using: {screenshot_path}")
+def process_frame(screenshot_path: Path) -> None:
+    """Process a single frame and save all preprocessing steps."""
+    print(f"Processing: {screenshot_path.name}")
+    print("=" * 60)
 
     # Load image
-    print(f"Loading {screenshot_path}...")
     image = load_image(screenshot_path)
+    print(f"Image size: {image.shape[1]}x{image.shape[0]}")
 
     # Detect edges and calculate columns
     left_edge, right_edge = detect_scoreboard_edges(image)
     columns = calculate_column_positions(left_edge, right_edge)
+    print(f"Scoreboard edges: left={left_edge}, right={right_edge}")
 
-    # Create output directory
-    OUTPUT_DIR.mkdir(exist_ok=True)
+    # Create output directory for this frame
+    frame_name = screenshot_path.stem.replace(" ", "_")
+    frame_dir = OUTPUT_DIR / "test" / frame_name
+    frame_dir.mkdir(parents=True, exist_ok=True)
+    print(f"Output: {frame_dir}")
+    print()
 
-    # Test different thresholds
-    thresholds = [30, 50, 70, 90]
+    for team in (1, 2):
+        team_dir = frame_dir / f"team{team}"
+        team_dir.mkdir(exist_ok=True)
+        print(f"Team {team}:")
 
-    # Collect sample crops for visualization
-    samples = [
-        (1, 0, "name", "T1_R0_name"),
-        (1, 4, "name", "T1_R4_name"),  # VOLTSA
-        (2, 0, "name", "T2_R0_name"),  # COWBOY
-        (1, 0, "elims", "T1_R0_elims"),
-        (2, 2, "elims", "T2_R2_elims"),  # MAPPSY
-        (2, 4, "deaths", "T2_R4_deaths"),  # PETITPIGEON
-    ]
+        for row in range(5):
+            row_prefix = f"p{row + 1}"  # p1, p2, p3, p4, p5
 
-    for team, row, col, label in samples:
-        crop = crop_cell(image, team, row, col, columns)
+            # Process stat columns (OCR preprocessing)
+            for col_name in STAT_COLUMNS:
+                if col_name not in columns:
+                    continue
 
-        # Create comparison strip
-        h, w = crop.shape[:2]
-        strip_h = h
-        strip_w = w * (len(thresholds) + 1) + 10 * len(thresholds)
-        strip = np.ones((strip_h, strip_w, 3), dtype=np.uint8) * 128
+                crop = crop_cell(image, team, row, col_name, columns)
 
-        # Original
-        strip[:h, :w] = crop
+                # Save original
+                save_crop(crop, team_dir / f"{row_prefix}_{col_name}_0_original.png")
 
-        # Different thresholds
-        x_offset = w + 10
-        for thresh in thresholds:
-            binary = preprocess_saturation(crop, thresh)
-            binary_bgr = cv2.cvtColor(binary, cv2.COLOR_GRAY2BGR)
-            strip[:h, x_offset:x_offset + w] = binary_bgr
-            x_offset += w + 10
+                # Save preprocessing steps
+                steps = preprocess_for_ocr(crop)
+                for step_name, step_img in steps.items():
+                    save_crop(step_img, team_dir / f"{row_prefix}_{col_name}_{step_name}.png")
 
-        # Save strip
-        output_path = OUTPUT_DIR / f"preprocess_{label}.png"
-        cv2.imwrite(str(output_path), strip)
-        print(f"Saved {output_path}")
+            # Process template columns (role, hero)
+            for col_name in TEMPLATE_COLUMNS:
+                if col_name not in columns:
+                    continue
 
-    # Also save a combined visualization
-    print(f"\nSaved preprocessing comparisons to {OUTPUT_DIR}")
-    print("Columns: Original, thresh=30, thresh=50, thresh=70, thresh=90")
+                crop = crop_cell(image, team, row, col_name, columns)
+
+                # Save original
+                save_crop(crop, team_dir / f"{row_prefix}_{col_name}_0_original.png")
+
+                # Save saturation binary (used for template matching)
+                sat_binary = extract_saturation_binary(crop)
+                save_crop(sat_binary, team_dir / f"{row_prefix}_{col_name}_1_sat_binary.png")
+
+            print(f"  Player {row + 1}: saved")
+
+    print()
+    print(f"Done! Output saved to: {frame_dir}")
+
+
+def main():
+    """Run preprocessing on a single screenshot."""
+    if len(sys.argv) > 1:
+        screenshot_path = Path(sys.argv[1])
+        if not screenshot_path.is_absolute():
+            screenshot_path = SCREENSHOTS_DIR / screenshot_path
+    else:
+        # Find first PNG in screenshots folder
+        screenshots = sorted(SCREENSHOTS_DIR.glob("*.png"))
+
+        if not screenshots:
+            print("No screenshots found in screenshots/")
+            print("Usage: python debug/test_preprocessing.py [screenshot_path]")
+            return
+
+        screenshot_path = screenshots[0]
+
+    if not screenshot_path.exists():
+        print(f"Screenshot not found: {screenshot_path}")
+        return
+
+    process_frame(screenshot_path)
 
 
 if __name__ == "__main__":

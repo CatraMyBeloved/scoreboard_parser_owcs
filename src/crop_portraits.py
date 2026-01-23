@@ -6,7 +6,8 @@ Saves with numbered filenames for manual labeling.
 
 from pathlib import Path
 
-from .utils import load_image, save_crop, crop_cell, detect_scoreboard_edges, calculate_column_positions, SCREENSHOTS_DIR, TEMPLATES_DIR
+from src.utils import (load_image, save_crop, crop_cell,
+                     detect_scoreboard_edges, calculate_column_positions, SCREENSHOTS_DIR, TEMPLATES_DIR)
 
 
 def crop_all_hero_portraits(output_dir: Path) -> int:

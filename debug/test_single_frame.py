@@ -13,7 +13,7 @@ import cv2
 import numpy as np
 
 # Add src to path for imports
-sys.path.insert(0, str(Path(__file__).parent))
+sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from src.utils import (
     load_image,
@@ -26,11 +26,11 @@ from src.utils import (
 )
 from src import regions
 from src.recognize import (
-    _preprocess_for_ocr,
     extract_by_saturation,
     process_frame,
     PlayerData,
 )
+from src.digit_matcher import get_digit_matcher
 from src.process import build_dataframe, clean_values, export_csv
 
 
@@ -53,13 +53,16 @@ def save_all_crops(image: np.ndarray, output_dir: Path, columns: dict) -> None:
 
 
 def save_preprocessed_crops(image: np.ndarray, output_dir: Path, columns: dict) -> None:
-    """Save preprocessed versions of crops for debugging OCR."""
+    """Save preprocessed versions of crops for debugging."""
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    # Columns that use OCR (saturation-based preprocessing)
-    ocr_columns = ["name", "ult", "elims", "assists", "deaths", "damage", "healing", "mit"]
+    # Stat columns use digit template matching
+    stat_columns = ["elims", "assists", "deaths", "damage", "healing", "mit"]
 
-    # Columns that use saturation extraction (template matching)
+    # OCR columns (name, ult) use PaddleOCR with saturation preprocessing
+    ocr_columns = ["name", "ult"]
+
+    # Template matching columns
     template_columns = ["role", "hero"]
 
     for team in (1, 2):
@@ -67,8 +70,8 @@ def save_preprocessed_crops(image: np.ndarray, output_dir: Path, columns: dict) 
         team_dir.mkdir(exist_ok=True)
 
         for row in range(5):
-            # Process OCR columns
-            for col_name in ocr_columns:
+            # Process stat columns (digit matching preprocessing)
+            for col_name in stat_columns:
                 if col_name not in columns:
                     continue
 
@@ -78,32 +81,49 @@ def save_preprocessed_crops(image: np.ndarray, output_dir: Path, columns: dict) 
                 orig_path = team_dir / f"row{row}_{col_name}_1_original.png"
                 save_crop(crop, orig_path)
 
-                # Save scaled version (3x)
+                # Save scaled version (4x) - digit matcher uses this
+                scaled = cv2.resize(crop, None, fx=4, fy=4, interpolation=cv2.INTER_CUBIC)
+                scaled_path = team_dir / f"row{row}_{col_name}_2_scaled.png"
+                save_crop(scaled, scaled_path)
+
+                # Save grayscale
+                gray = cv2.cvtColor(scaled, cv2.COLOR_BGR2GRAY)
+                gray_path = team_dir / f"row{row}_{col_name}_3_gray.png"
+                save_crop(gray, gray_path)
+
+                # CLAHE enhanced
+                clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+                enhanced = clahe.apply(gray)
+                clahe_path = team_dir / f"row{row}_{col_name}_4_clahe.png"
+                save_crop(enhanced, clahe_path)
+
+                # Otsu (not inverted - digit matcher style)
+                _, otsu = cv2.threshold(enhanced, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+                otsu_path = team_dir / f"row{row}_{col_name}_5_otsu.png"
+                save_crop(otsu, otsu_path)
+
+            # Process OCR columns (name, ult)
+            for col_name in ocr_columns:
+                if col_name not in columns:
+                    continue
+
+                crop = crop_cell(image, team, row, col_name, columns)
+
+                # Save original
+                orig_path = team_dir / f"row{row}_{col_name}_1_original.png"
+                save_crop(crop, orig_path)
+
+                # Scaled (3x for OCR)
                 scaled = cv2.resize(crop, None, fx=3, fy=3, interpolation=cv2.INTER_CUBIC)
                 scaled_path = team_dir / f"row{row}_{col_name}_2_scaled.png"
                 save_crop(scaled, scaled_path)
 
-                # Save saturation channel
+                # Saturation extraction (for white text on colored bg)
                 hsv = cv2.cvtColor(scaled, cv2.COLOR_BGR2HSV)
                 saturation = hsv[:, :, 1]
+                _, sat_binary = cv2.threshold(saturation, 30, 255, cv2.THRESH_BINARY)
                 sat_path = team_dir / f"row{row}_{col_name}_3_saturation.png"
-                save_crop(saturation, sat_path)
-
-                # Save binary threshold
-                _, binary = cv2.threshold(saturation, 30, 255, cv2.THRESH_BINARY)
-                binary_path = team_dir / f"row{row}_{col_name}_4_binary.png"
-                save_crop(binary, binary_path)
-
-                # Save eroded (final OCR input)
-                kernel = np.ones((2, 2), np.uint8)
-                eroded = cv2.erode(binary, kernel, iterations=1)
-                eroded_path = team_dir / f"row{row}_{col_name}_5_eroded.png"
-                save_crop(eroded, eroded_path)
-
-                # Save full preprocessing result
-                preprocessed = _preprocess_for_ocr(crop)
-                final_path = team_dir / f"row{row}_{col_name}_6_final.png"
-                save_crop(preprocessed, final_path)
+                save_crop(sat_binary, sat_path)
 
             # Process template matching columns (role, hero)
             for col_name in template_columns:
@@ -153,9 +173,11 @@ def process_single_frame(screenshot_path: Path) -> None:
     save_preprocessed_crops(image, preprocessed_dir, columns)
     print(f"  Preprocessed saved to: {preprocessed_dir}")
 
-    # Process frame with OCR
+    # Process frame with recognition
     print()
-    print("Running recognition (this may take a moment)...")
+    print("Running recognition...")
+    print("  - Stats: digit template matching")
+    print("  - Names/Ult: PaddleOCR")
     players = process_frame(image)
 
     # Build and clean DataFrame
@@ -182,8 +204,12 @@ def process_single_frame(screenshot_path: Path) -> None:
 
         team_df = df[df["team"] == team]
         for _, row in team_df.iterrows():
-            print(f"  [{row['role']:>7}] {row['hero']:<15} {row['name']:<20}")
-            print(f"           Ult: {'READY' if row['ult_ready'] else f'{row["ult_charge"]}%' if row['ult_charge'] is not None else '?'}")
+            role = row['role'] or '?'
+            hero = row['hero'] or '?'
+            name = row['name'] or '?'
+            print(f"  [{role:>7}] {hero:<15} {name:<20}")
+            ult_str = 'READY' if row['ult_ready'] else f"{row['ult_charge']}%" if row['ult_charge'] is not None else '?'
+            print(f"           Ult: {ult_str}")
             print(f"           E:{row['elims']} A:{row['assists']} D:{row['deaths']} "
                   f"DMG:{row['damage']} HEAL:{row['healing']} MIT:{row['mit']}")
             print()
@@ -203,15 +229,12 @@ def main():
         if not screenshot_path.is_absolute():
             screenshot_path = SCREENSHOTS_DIR / screenshot_path
     else:
-        # Find first "full team" screenshot for testing
-        screenshots = sorted(SCREENSHOTS_DIR.glob("full team *.png"))
-        if not screenshots:
-            # Fall back to any PNG
-            screenshots = sorted(SCREENSHOTS_DIR.glob("*.png"))
+        # Find first PNG in screenshots folder
+        screenshots = sorted(SCREENSHOTS_DIR.glob("*.png"))
 
         if not screenshots:
             print("No screenshots found in screenshots/")
-            print("Usage: python test_single_frame.py [screenshot_path]")
+            print("Usage: python debug/test_single_frame.py [screenshot_path]")
             return
 
         screenshot_path = screenshots[0]

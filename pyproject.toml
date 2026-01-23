@@ -7,9 +7,11 @@ dependencies = [
     "mss",
     "opencv-python",
     "pillow",
-    "paddleocr",
+    "paddleocr>=3.3.0,<3.4",
+    "paddlepaddle>=3.2.0,<3.3",
     "pandas",
     "imagehash",
+    "matplotlib>=3.10.8",
 ]
 
 [project.optional-dependencies]
