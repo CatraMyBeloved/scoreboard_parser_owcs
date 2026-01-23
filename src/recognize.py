@@ -2,9 +2,9 @@
 
 Handles:
 - Role icon template matching
-- Hero portrait template matching (TODO)
-- Ult status detection (TODO)
-- OCR for player names and stats (TODO)
+- Hero portrait template matching
+- Ult status detection
+- OCR for player names and stats
 """
 
 from dataclasses import dataclass
@@ -157,46 +157,118 @@ def match_role(crop: Image, templates: Templates | None = None) -> TemplateMatch
 
 
 # -----------------------------------------------------------------------------
-# Hero Recognition (TODO)
+# Hero Recognition
 # -----------------------------------------------------------------------------
+
+
+# Minimum confidence for a valid hero match (below this = unknown/dead)
+HERO_CONFIDENCE_THRESHOLD = 0.7
 
 
 def match_hero(crop: Image, templates: Templates | None = None) -> TemplateMatch:
     """Match a hero portrait crop against templates.
 
+    Uses direct template matching against pre-cropped hero portraits.
+    Templates include both cyan (team 1) and yellow (team 2) background variants.
+
     Args:
         crop: BGR image of the hero column cell
-        templates: Optional pre-loaded templates
+        templates: Optional pre-loaded templates (uses cached if not provided)
 
     Returns:
-        TemplateMatch with hero name and confidence score
+        TemplateMatch with hero name and confidence score.
+        Returns "unknown" if confidence is below threshold (e.g., hero is dead/greyed out).
     """
-    # TODO: Implement hero template matching
-    # May need different approach than roles (color-based matching, histogram comparison, etc.)
-    return TemplateMatch(name="unknown", confidence=0.0)
+    if templates is None:
+        templates = _template_manager.load_templates("heroes_cropped")
+
+    if not templates:
+        return TemplateMatch(name="unknown", confidence=0.0)
+
+    best_match = TemplateMatch(name="unknown", confidence=-1.0)
+
+    for template_name, template in templates.items():
+        if template.shape != crop.shape:
+            template_resized = cv2.resize(
+                template, (crop.shape[1], crop.shape[0])
+            )
+        else:
+            template_resized = template
+
+        result = cv2.matchTemplate(crop, template_resized, cv2.TM_CCOEFF_NORMED)
+        score = float(result[0, 0])
+
+        if score > best_match.confidence:
+            hero_name = template_name.rsplit("_", 1)[0]
+            best_match = TemplateMatch(name=hero_name, confidence=score)
+
+    if best_match.confidence < HERO_CONFIDENCE_THRESHOLD:
+        return TemplateMatch(name="unknown", confidence=best_match.confidence)
+
+    return best_match
 
 
 # -----------------------------------------------------------------------------
-# Ult Status Detection (TODO)
+# Ult Status Detection
 # -----------------------------------------------------------------------------
 
+# Minimum confidence for checkmark detection
+ULT_READY_CONFIDENCE_THRESHOLD = 0.7
 
-def detect_ult_status(crop: Image) -> tuple[bool, int | None]:
+
+def detect_ult_status(crop: Image, templates: Templates | None = None) -> tuple[bool, int | None]:
     """Detect ultimate status from the ult column cell.
+
+    First tries to match the checkmark (ult ready). If no match, uses OCR
+    to read the charge percentage.
 
     Args:
         crop: BGR image of the ult column cell
+        templates: Optional pre-loaded ult templates
 
     Returns:
         Tuple of (is_ready, charge_percentage)
         - is_ready: True if ult is ready (checkmark visible)
         - charge_percentage: 0-99 if charging, None if ready
     """
-    # TODO: Implement ult detection
-    # Could use:
-    # - Template matching for the checkmark
-    # - OCR for the percentage number
-    # - Color detection (ready vs charging may have different colors)
+    if templates is None:
+        templates = _template_manager.load_templates("ult")
+
+    # Try to match checkmark using saturation extraction (white checkmark)
+    if templates:
+        crop_binary = extract_by_saturation(crop)
+        best_score = -1.0
+
+        for template in templates.values():
+            template_binary = extract_by_saturation(template)
+
+            # Resize if needed
+            if template_binary.shape != crop_binary.shape:
+                template_binary = cv2.resize(
+                    template_binary, (crop_binary.shape[1], crop_binary.shape[0])
+                )
+
+            result = cv2.matchTemplate(crop_binary, template_binary, cv2.TM_CCOEFF_NORMED)
+            score = float(result[0, 0])
+            best_score = max(best_score, score)
+
+        if best_score >= ULT_READY_CONFIDENCE_THRESHOLD:
+            return True, None
+
+    # No checkmark found, try OCR for percentage
+    text = _run_ocr(crop)
+    if text:
+        # Extract digits only
+        digits = ''.join(c for c in text if c.isdigit())
+        if digits:
+            try:
+                percentage = int(digits)
+                if 0 <= percentage <= 100:
+                    return False, percentage
+            except ValueError:
+                pass
+
+    # Fallback: unknown state
     return False, None
 
 
@@ -224,23 +296,19 @@ def _preprocess_for_ocr(crop: Image, scale: int = 3) -> Image:
     White has low saturation, so we threshold on saturation channel.
     Upscales for better OCR accuracy on small crops.
     """
-    # Upscale first for better quality
     if scale > 1:
         crop = cv2.resize(crop, None, fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC)
 
     hsv = cv2.cvtColor(crop, cv2.COLOR_BGR2HSV)
     saturation = hsv[:, :, 1]
 
-    # Low saturation = white text, high saturation = colored background
-    # Threshold so text becomes black on white (better for OCR)
+
     _, binary = cv2.threshold(saturation, 30, 255, cv2.THRESH_BINARY)
 
-    # Dilate to thicken thin characters (like italic "I")
-    # We want to erode because text is black on white (erode black = thicken)
+
     kernel = np.ones((2, 2), np.uint8)
     binary = cv2.erode(binary, kernel, iterations=1)
 
-    # Convert back to BGR (3 channel) for PaddleOCR
     return cv2.cvtColor(binary, cv2.COLOR_GRAY2BGR)
 
 
@@ -248,12 +316,10 @@ def _run_ocr(crop: Image, preprocess: bool = True) -> str:
     """Run OCR on a crop and return raw text."""
     ocr = _get_ocr()
 
-    # Apply preprocessing for better text extraction
     if preprocess:
         crop = _preprocess_for_ocr(crop)
 
     result = ocr.predict(crop)
-    # Result is a list of dicts, first element contains 'rec_texts'
     if result and len(result) > 0:
         first = result[0]
         if isinstance(first, dict) and 'rec_texts' in first:
@@ -287,9 +353,7 @@ def ocr_number(crop: Image) -> int | None:
     text = _run_ocr(crop)
     if not text:
         return None
-    # Remove commas and whitespace
     cleaned = text.replace(',', '').replace(' ', '').strip()
-    # Try to parse as integer
     try:
         return int(cleaned)
     except ValueError:
@@ -348,21 +412,18 @@ def process_player(
     if role_match:
         data.role = role_match.name
 
-    # Hero recognition (TODO)
-    # hero_crop = crop_cell(image, team, row, "hero", columns)
-    # hero_match = match_hero(hero_crop)
-    # if hero_match:
-    #     data.hero = hero_match.name
+    hero_crop = crop_cell(image, team, row, "hero", columns)
+    hero_match = match_hero(hero_crop)
+    if hero_match:
+        data.hero = hero_match.name
 
-    # Ult status (TODO)
-    # ult_crop = crop_cell(image, team, row, "ult", columns)
-    # data.ult_ready, data.ult_charge = detect_ult_status(ult_crop)
+    # Ult status
+    ult_crop = crop_cell(image, team, row, "ult", columns)
+    data.ult_ready, data.ult_charge = detect_ult_status(ult_crop)
 
-    # Name OCR
     name_crop = crop_cell(image, team, row, "name", columns)
     data.name = ocr_text(name_crop)
 
-    # Stats OCR
     for stat in ["elims", "assists", "deaths", "damage", "healing", "mit"]:
         stat_crop = crop_cell(image, team, row, stat, columns)
         setattr(data, stat, ocr_number(stat_crop))
