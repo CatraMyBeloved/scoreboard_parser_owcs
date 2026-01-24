@@ -23,10 +23,10 @@ def ensure_dirs() -> None:
 
 def load_image(path: Path) -> np.ndarray:
     """Load image as BGR numpy array (OpenCV format)."""
-    img = cv2.imread(str(path))
-    if img is None:
+    image = cv2.imread(str(path))
+    if image is None:
         raise ValueError(f"Could not load image: {path}")
-    return img
+    return image
 
 
 def save_crop(crop: np.ndarray, path: Path) -> None:

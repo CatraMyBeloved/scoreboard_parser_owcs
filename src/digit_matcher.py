@@ -51,9 +51,9 @@ class DigitMatcher:
         for digit in range(10):
             path = digits_dir / f"{digit}.png"
             if path.exists():
-                img = cv2.imread(str(path))
-                if img is not None:
-                    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+                image = cv2.imread(str(path))
+                if image is not None:
+                    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
                     _, binary = cv2.threshold(
                         gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU
                     )
@@ -120,19 +120,11 @@ def _preprocess(crop: np.ndarray) -> np.ndarray:
     Returns:
         Binary image (white digits on black background)
     """
-    # Scale 4x
     scaled = cv2.resize(crop, None, fx=4, fy=4, interpolation=cv2.INTER_CUBIC)
-
-    # Grayscale
     gray = cv2.cvtColor(scaled, cv2.COLOR_BGR2GRAY)
-
-    # CLAHE (Contrast Limited Adaptive Histogram Equalization)
     clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
     enhanced = clahe.apply(gray)
-
-    # Otsu threshold (NOT inverted - keeps white digits on black background)
     _, binary = cv2.threshold(enhanced, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-
     return binary
 
 
@@ -154,17 +146,14 @@ def _match_digits(
     matches = []
 
     for digit, template in templates.items():
-        th, tw = template.shape[:2]
-        ih, iw = image.shape[:2]
+        template_height, template_width = template.shape[:2]
+        image_height, image_width = image.shape[:2]
 
         # Skip if template is larger than image
-        if th > ih or tw > iw:
+        if template_height > image_height or template_width > image_width:
             continue
 
-        # Template matching
         result = cv2.matchTemplate(image, template, cv2.TM_CCOEFF_NORMED)
-
-        # Find all locations above threshold
         locations = np.where(result >= threshold)
 
         for y, x in zip(*locations):
@@ -175,8 +164,8 @@ def _match_digits(
                     x=int(x),
                     y=int(y),
                     confidence=confidence,
-                    width=tw,
-                    height=th,
+                    width=template_width,
+                    height=template_height,
                 )
             )
 
@@ -199,12 +188,10 @@ def _non_max_suppression(
     if not matches:
         return []
 
-    # Sort by confidence (highest first)
     sorted_matches = sorted(matches, key=lambda m: -m.confidence)
 
     kept = []
     for match in sorted_matches:
-        # Check if this match overlaps with any kept match
         overlaps = False
         for kept_match in kept:
             if abs(match.x - kept_match.x) < min_distance:
@@ -226,7 +213,6 @@ def _matches_to_number(matches: list[DigitMatch]) -> str:
     Returns:
         String representation of the detected number
     """
-    # Sort by X position (left to right)
     sorted_matches = sorted(matches, key=lambda m: m.x)
     return "".join(m.digit for m in sorted_matches)
 

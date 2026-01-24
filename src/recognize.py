@@ -10,7 +10,7 @@ Handles:
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TypeAlias
+from typing import Callable, TypeAlias
 
 import cv2
 import numpy as np
@@ -20,6 +20,7 @@ from .utils import TEMPLATES_DIR
 # Type aliases
 Image: TypeAlias = np.ndarray
 Templates: TypeAlias = dict[str, Image]
+Preprocessor: TypeAlias = Callable[[Image], Image]
 
 
 # -----------------------------------------------------------------------------
@@ -65,9 +66,9 @@ class TemplateManager:
             return templates
 
         for path in category_dir.glob("*.png"):
-            img = cv2.imread(str(path))
-            if img is not None:
-                templates[path.stem] = img
+            image = cv2.imread(str(path))
+            if image is not None:
+                templates[path.stem] = image
 
         self._cache[category] = templates
         return templates
@@ -110,6 +111,53 @@ def extract_by_saturation(image: Image, threshold: int = 50) -> Image:
     return binary
 
 
+def find_best_template_match(
+    crop: Image,
+    templates: Templates,
+    preprocess: Preprocessor | None = None,
+    name_transform: Callable[[str], str] | None = None,
+) -> TemplateMatch:
+    """Find the best matching template for a crop.
+
+    Common helper for template matching operations. Handles resizing templates
+    to match crop dimensions and tracks the best match.
+
+    Args:
+        crop: BGR image to match against
+        templates: Dict mapping template names to BGR images
+        preprocess: Optional function to preprocess both crop and templates
+        name_transform: Optional function to transform template name to match name
+
+    Returns:
+        TemplateMatch with best match name and confidence
+    """
+    if preprocess is not None:
+        crop_processed = preprocess(crop)
+    else:
+        crop_processed = crop
+
+    best_match = TemplateMatch(name="unknown", confidence=-1.0)
+
+    for template_name, template in templates.items():
+        if preprocess is not None:
+            template_processed = preprocess(template)
+        else:
+            template_processed = template
+
+        if template_processed.shape != crop_processed.shape:
+            template_processed = cv2.resize(
+                template_processed, (crop_processed.shape[1], crop_processed.shape[0])
+            )
+
+        score = float(cv2.matchTemplate(crop_processed, template_processed, cv2.TM_CCOEFF_NORMED)[0, 0])
+
+        if score > best_match.confidence:
+            match_name = name_transform(template_name) if name_transform else template_name
+            best_match = TemplateMatch(name=match_name, confidence=score)
+
+    return best_match
+
+
 # -----------------------------------------------------------------------------
 # Role Recognition
 # -----------------------------------------------------------------------------
@@ -134,27 +182,7 @@ def match_role(crop: Image, templates: Templates | None = None) -> TemplateMatch
     if not templates:
         return TemplateMatch(name="unknown", confidence=0.0)
 
-    crop_binary = extract_by_saturation(crop)
-
-    best_match = TemplateMatch(name="unknown", confidence=-1.0)
-
-    for name, template in templates.items():
-        template_binary = extract_by_saturation(template)
-
-        # Resize template to match crop dimensions
-        if template_binary.shape != crop_binary.shape:
-            template_binary = cv2.resize(
-                template_binary, (crop_binary.shape[1], crop_binary.shape[0])
-            )
-
-        # Template matching on binary images
-        result = cv2.matchTemplate(crop_binary, template_binary, cv2.TM_CCOEFF_NORMED)
-        score = float(result[0, 0])
-
-        if score > best_match.confidence:
-            best_match = TemplateMatch(name=name, confidence=score)
-
-    return best_match
+    return find_best_template_match(crop, templates, preprocess=extract_by_saturation)
 
 
 # -----------------------------------------------------------------------------
@@ -162,8 +190,12 @@ def match_role(crop: Image, templates: Templates | None = None) -> TemplateMatch
 # -----------------------------------------------------------------------------
 
 
-# Minimum confidence for a valid hero match (below this = unknown/dead)
 HERO_CONFIDENCE_THRESHOLD = 0.7
+
+
+def _hero_name_from_template(template_name: str) -> str:
+    """Extract hero name from template filename (removes _1/_2 suffix)."""
+    return template_name.rsplit("_", 1)[0]
 
 
 def match_hero(crop: Image, templates: Templates | None = None) -> TemplateMatch | None:
@@ -186,26 +218,11 @@ def match_hero(crop: Image, templates: Templates | None = None) -> TemplateMatch
     if not templates:
         return None
 
-    best_match: TemplateMatch | None = None
-    best_score = -1.0
+    best_match = find_best_template_match(
+        crop, templates, name_transform=_hero_name_from_template
+    )
 
-    for template_name, template in templates.items():
-        if template.shape != crop.shape:
-            template_resized = cv2.resize(
-                template, (crop.shape[1], crop.shape[0])
-            )
-        else:
-            template_resized = template
-
-        result = cv2.matchTemplate(crop, template_resized, cv2.TM_CCOEFF_NORMED)
-        score = float(result[0, 0])
-
-        if score > best_score:
-            best_score = score
-            hero_name = template_name.rsplit("_", 1)[0]
-            best_match = TemplateMatch(name=hero_name, confidence=score)
-
-    if best_match is None or best_match.confidence < HERO_CONFIDENCE_THRESHOLD:
+    if best_match.confidence < HERO_CONFIDENCE_THRESHOLD:
         return None
 
     return best_match
@@ -215,8 +232,59 @@ def match_hero(crop: Image, templates: Templates | None = None) -> TemplateMatch
 # Ult Status Detection
 # -----------------------------------------------------------------------------
 
-# Minimum confidence for checkmark detection
+
 ULT_READY_CONFIDENCE_THRESHOLD = 0.7
+
+
+def detect_ultimate_ready_checkmark(crop: Image, templates: Templates) -> bool:
+    """Detect if the ultimate ready checkmark is visible.
+
+    Args:
+        crop: BGR image of the ult column cell
+        templates: Pre-loaded ult templates (checkmark images)
+
+    Returns:
+        True if checkmark is detected with sufficient confidence
+    """
+    if not templates:
+        return False
+
+    crop_binary = extract_by_saturation(crop)
+    best_score = -1.0
+
+    for template in templates.values():
+        template_binary = extract_by_saturation(template)
+
+        if template_binary.shape != crop_binary.shape:
+            template_binary = cv2.resize(
+                template_binary, (crop_binary.shape[1], crop_binary.shape[0])
+            )
+
+        best_score = max(best_score, float(cv2.matchTemplate(crop_binary, template_binary, cv2.TM_CCOEFF_NORMED)[0, 0]))
+
+    return best_score >= ULT_READY_CONFIDENCE_THRESHOLD
+
+
+def read_ultimate_charge_percentage(crop: Image) -> int | None:
+    """Read the ultimate charge percentage via OCR.
+
+    Args:
+        crop: BGR image of the ult column cell
+
+    Returns:
+        Charge percentage (0-100) or None if unreadable
+    """
+    text = _run_ocr(crop)
+    digits = "".join(c for c in text if c.isdigit())
+
+    if not digits:
+        return None
+
+    try:
+        percentage = int(digits)
+        return percentage if 0 <= percentage <= 100 else None
+    except ValueError:
+        return None
 
 
 def detect_ult_status(crop: Image, templates: Templates | None = None) -> tuple[bool, int | None]:
@@ -237,33 +305,13 @@ def detect_ult_status(crop: Image, templates: Templates | None = None) -> tuple[
     if templates is None:
         templates = _template_manager.load_templates("ult")
 
-    # Try to match checkmark using saturation extraction (white checkmark)
-    if templates:
-        crop_binary = extract_by_saturation(crop)
-        best_score = -1.0
+    if detect_ultimate_ready_checkmark(crop, templates):
+        return True, None
 
-        for template in templates.values():
-            template_binary = extract_by_saturation(template)
-
-            # Resize if needed
-            if template_binary.shape != crop_binary.shape:
-                template_binary = cv2.resize(
-                    template_binary, (crop_binary.shape[1], crop_binary.shape[0])
-                )
-
-            result = cv2.matchTemplate(crop_binary, template_binary, cv2.TM_CCOEFF_NORMED)
-            score = float(result[0, 0])
-            best_score = max(best_score, score)
-
-        if best_score >= ULT_READY_CONFIDENCE_THRESHOLD:
-            return True, None
-
-    # No checkmark found, try OCR for percentage
-    percentage = ocr_ult_charge(crop)
-    if percentage is not None and 0 <= percentage <= 100:
+    percentage = read_ultimate_charge_percentage(crop)
+    if percentage is not None:
         return False, percentage
 
-    # Fallback: unknown state
     return False, None
 
 
@@ -271,7 +319,6 @@ def detect_ult_status(crop: Image, templates: Templates | None = None) -> tuple[
 # OCR Functions (PaddleOCR 3.x)
 # -----------------------------------------------------------------------------
 
-# Lazy-loaded PaddleOCR instance
 _paddle_ocr = None
 
 
@@ -307,19 +354,31 @@ def _preprocess_for_ocr(crop: Image, scale: int = 3) -> Image:
     return cv2.cvtColor(binary, cv2.COLOR_GRAY2BGR)
 
 
+def _extract_text_from_ocr_result(result) -> str:
+    """Extract text from PaddleOCR result structure.
+
+    PaddleOCR returns a list where the first element is a dict with 'rec_texts'.
+
+    Args:
+        result: Raw PaddleOCR result
+
+    Returns:
+        Extracted text or empty string
+    """
+    if not result or len(result) == 0:
+        return ""
+
+    first = result[0]
+    if not isinstance(first, dict) or "rec_texts" not in first:
+        return ""
+
+    texts = first["rec_texts"]
+    return " ".join(texts) if texts else ""
+
+
 def _run_ocr(crop: Image) -> str:
     """Run OCR on a crop and return raw text."""
-    ocr = _get_paddle_ocr()
-    processed = _preprocess_for_ocr(crop)
-
-    result = ocr.predict(processed)
-    if result and len(result) > 0:
-        first = result[0]
-        if isinstance(first, dict) and "rec_texts" in first:
-            texts = first["rec_texts"]
-            if texts:
-                return " ".join(texts)
-    return ""
+    return _extract_text_from_ocr_result(_get_paddle_ocr().predict(_preprocess_for_ocr(crop)))
 
 
 def ocr_text(crop: Image) -> str:
@@ -345,18 +404,7 @@ def ocr_ult_charge(crop: Image) -> int | None:
     Returns:
         Parsed integer (0-100) or None if extraction failed
     """
-    text = _run_ocr(crop)
-
-    # Extract only digits
-    digits = "".join(c for c in text if c.isdigit())
-
-    if not digits:
-        return None
-
-    try:
-        return int(digits)
-    except ValueError:
-        return None
+    return read_ultimate_charge_percentage(crop)
 
 
 # -----------------------------------------------------------------------------
@@ -405,7 +453,6 @@ def process_player(
 
     data = PlayerData(team=team, row=row)
 
-    # Role recognition
     role_crop = crop_cell(image, team, row, "role", columns)
     role_match = match_role(role_crop)
     if role_match:
@@ -416,15 +463,12 @@ def process_player(
     if hero_match:
         data.hero = hero_match.name
 
-    # Ult status
     ult_crop = crop_cell(image, team, row, "ult", columns)
     data.ult_ready, data.ult_charge = detect_ult_status(ult_crop)
 
-    # Player name (PaddleOCR)
     name_crop = crop_cell(image, team, row, "name", columns)
     data.name = ocr_text(name_crop)
 
-    # Stats (digit template matching)
     for stat in ["elims", "assists", "deaths", "damage", "healing", "mit"]:
         stat_crop = crop_cell(image, team, row, stat, columns)
         setattr(data, stat, recognize_stat(stat_crop))
@@ -443,11 +487,9 @@ def process_frame(image: Image) -> list[PlayerData]:
     """
     from .utils import detect_scoreboard_edges, calculate_column_positions
 
-    # Detect scoreboard and calculate column positions
     left_edge, right_edge = detect_scoreboard_edges(image)
     columns = calculate_column_positions(left_edge, right_edge)
 
-    # Process all players
     players = []
     for team in (1, 2):
         for row in range(5):

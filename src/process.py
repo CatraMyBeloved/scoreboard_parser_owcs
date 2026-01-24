@@ -36,44 +36,44 @@ def build_dataframe(frames_data: list[tuple[str, list[PlayerData]]]) -> pd.DataF
     if not rows:
         return pd.DataFrame()
 
-    df = pd.DataFrame(rows)
+    dataframe = pd.DataFrame(rows)
 
     # Reorder columns with frame first
-    cols = ["frame", "team", "row", "role", "hero", "name", "ult_ready", "ult_charge",
-            "elims", "assists", "deaths", "damage", "healing", "mit"]
-    df = df[cols]
+    column_order = ["frame", "team", "row", "role", "hero", "name", "ult_ready", "ult_charge",
+                    "elims", "assists", "deaths", "damage", "healing", "mit"]
+    dataframe = dataframe[column_order]
 
-    return df
+    return dataframe
 
 
-def clean_values(df: pd.DataFrame) -> pd.DataFrame:
+def clean_values(dataframe: pd.DataFrame) -> pd.DataFrame:
     """Clean and validate extracted values.
 
     - Strips whitespace from string columns
     - Ensures numeric columns are proper integers
     - Handles common OCR errors
     """
-    if df.empty:
-        return df
+    if dataframe.empty:
+        return dataframe
 
-    df = df.copy()
+    dataframe = dataframe.copy()
 
     # Clean string columns
-    for col in ["role", "hero", "name"]:
-        if col in df.columns:
-            df[col] = df[col].astype(str).str.strip()
-            df[col] = df[col].replace("None", None)
+    for column in ["role", "hero", "name"]:
+        if column in dataframe.columns:
+            dataframe[column] = dataframe[column].astype(str).str.strip()
+            dataframe[column] = dataframe[column].replace("None", None)
 
     # Ensure numeric columns are integers (NaN for missing)
-    numeric_cols = ["elims", "assists", "deaths", "damage", "healing", "mit", "ult_charge"]
-    for col in numeric_cols:
-        if col in df.columns:
-            df[col] = pd.to_numeric(df[col], errors="coerce").astype("Int64")
+    numeric_columns = ["elims", "assists", "deaths", "damage", "healing", "mit", "ult_charge"]
+    for column in numeric_columns:
+        if column in dataframe.columns:
+            dataframe[column] = pd.to_numeric(dataframe[column], errors="coerce").astype("Int64")
 
-    return df
+    return dataframe
 
 
-def detect_events(df: pd.DataFrame) -> pd.DataFrame:
+def detect_events(dataframe: pd.DataFrame) -> pd.DataFrame:
     """Derive events from stat deltas.
 
     Detectable events:
@@ -87,16 +87,16 @@ def detect_events(df: pd.DataFrame) -> pd.DataFrame:
     pass
 
 
-def export_csv(df: pd.DataFrame, output_path: Path) -> None:
+def export_csv(dataframe: pd.DataFrame, output_path: Path) -> None:
     """Export DataFrame to CSV."""
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    df.to_csv(output_path, index=False)
+    dataframe.to_csv(output_path, index=False)
 
 
-def export_parquet(df: pd.DataFrame, output_path: Path) -> None:
+def export_parquet(dataframe: pd.DataFrame, output_path: Path) -> None:
     """Export DataFrame to Parquet."""
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    df.to_parquet(output_path, index=False)
+    dataframe.to_parquet(output_path, index=False)
 
 
 def process_screenshots(screenshot_paths: list[Path], output_path: Path | None = None) -> pd.DataFrame:
@@ -127,14 +127,14 @@ def process_screenshots(screenshot_paths: list[Path], output_path: Path | None =
             continue
 
     print(f"\nBuilding DataFrame...")
-    df = build_dataframe(frames_data)
-    df = clean_values(df)
+    dataframe = build_dataframe(frames_data)
+    dataframe = clean_values(dataframe)
 
     print(f"Exporting to {output_path}")
-    export_csv(df, output_path)
+    export_csv(dataframe, output_path)
 
-    print(f"Done! {len(df)} rows written.")
-    return df
+    print(f"Done! {len(dataframe)} rows written.")
+    return dataframe
 
 
 def main():
@@ -152,9 +152,9 @@ def main():
         return
 
     print(f"Found {len(screenshots)} screenshots")
-    df = process_screenshots(screenshots[0:2])
+    dataframe = process_screenshots(screenshots[0:2])
     print(f"\nSample data:")
-    print(df.head(10).to_string())
+    print(dataframe.head(10).to_string())
 
 
 if __name__ == "__main__":
