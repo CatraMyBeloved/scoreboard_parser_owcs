@@ -36,7 +36,6 @@ def crop_all_hero_portraits(output_dir: Path) -> int:
         left_edge, right_edge = detect_scoreboard_edges(image)
         columns = calculate_column_positions(left_edge, right_edge)
 
-        # Crop team 1 (cyan) hero portraits
         for row in range(5):
             crop = crop_cell(image, team=1, row=row, column="hero", columns=columns)
             output_path = output_dir / f"cyan_{idx:03d}.png"
@@ -44,7 +43,6 @@ def crop_all_hero_portraits(output_dir: Path) -> int:
             print(f"  Saved: {output_path.name}")
             idx += 1
 
-        # Crop team 2 (yellow) hero portraits
         for row in range(5):
             crop = crop_cell(image, team=2, row=row, column="hero", columns=columns)
             output_path = output_dir / f"yellow_{idx:03d}.png"

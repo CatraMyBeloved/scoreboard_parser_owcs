@@ -15,12 +15,10 @@ from pathlib import Path
 
 import cv2
 
-# Add src to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from src.utils import SCREENSHOTS_DIR
 
-# State
 points: list[tuple[int, int]] = []
 rect_mode = False
 
@@ -58,7 +56,6 @@ def redraw(image, original) -> None:
         cv2.circle(image, (x, y), 5, (0, 255, 0), -1)
         cv2.putText(image, str(i + 1), (x + 8, y - 8), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
 
-    # Draw rectangles between consecutive point pairs in rect mode
     if rect_mode:
         for i in range(0, len(points) - 1, 2):
             p1, p2 = points[i], points[i + 1]
@@ -71,7 +68,6 @@ def main() -> None:
     global rect_mode
 
     if len(sys.argv) < 2:
-        # Try to find first image in screenshots folder
         if SCREENSHOTS_DIR.exists():
             images = list(SCREENSHOTS_DIR.glob("*.png")) + list(SCREENSHOTS_DIR.glob("*.jpg"))
             if images:
@@ -122,7 +118,6 @@ def main() -> None:
 
     cv2.destroyAllWindows()
 
-    # Print summary
     if points:
         print()
         print("=== Summary ===")

@@ -1,11 +1,4 @@
-"""Data processing and event detection.
-
-Handles:
-- Assembling raw extractions into DataFrame
-- Cleaning and validating values
-- Deriving events from deltas (kills, deaths, ult usage, hero swaps)
-- Export to CSV/Parquet
-"""
+"""Data processing and event detection."""
 
 from dataclasses import asdict
 from pathlib import Path
@@ -17,15 +10,6 @@ from src.utils import load_image, OUTPUT_DIR
 
 
 def build_dataframe(frames_data: list[tuple[str, list[PlayerData]]]) -> pd.DataFrame:
-    """Assemble all frame data into a single DataFrame.
-
-    Args:
-        frames_data: List of (frame_id, players) tuples where players is list of PlayerData
-
-    Returns:
-        DataFrame with columns: frame, team, row, role, hero, name, ult_ready, ult_charge,
-        elims, assists, deaths, damage, healing, mit
-    """
     rows = []
     for frame_id, players in frames_data:
         for player in players:
@@ -38,7 +22,6 @@ def build_dataframe(frames_data: list[tuple[str, list[PlayerData]]]) -> pd.DataF
 
     dataframe = pd.DataFrame(rows)
 
-    # Reorder columns with frame first
     column_order = ["frame", "team", "row", "role", "hero", "name", "ult_ready", "ult_charge",
                     "elims", "assists", "deaths", "damage", "healing", "mit"]
     dataframe = dataframe[column_order]
@@ -47,24 +30,16 @@ def build_dataframe(frames_data: list[tuple[str, list[PlayerData]]]) -> pd.DataF
 
 
 def clean_values(dataframe: pd.DataFrame) -> pd.DataFrame:
-    """Clean and validate extracted values.
-
-    - Strips whitespace from string columns
-    - Ensures numeric columns are proper integers
-    - Handles common OCR errors
-    """
     if dataframe.empty:
         return dataframe
 
     dataframe = dataframe.copy()
 
-    # Clean string columns
     for column in ["role", "hero", "name"]:
         if column in dataframe.columns:
             dataframe[column] = dataframe[column].astype(str).str.strip()
             dataframe[column] = dataframe[column].replace("None", None)
 
-    # Ensure numeric columns are integers (NaN for missing)
     numeric_columns = ["elims", "assists", "deaths", "damage", "healing", "mit", "ult_charge"]
     for column in numeric_columns:
         if column in dataframe.columns:
@@ -74,41 +49,21 @@ def clean_values(dataframe: pd.DataFrame) -> pd.DataFrame:
 
 
 def detect_events(dataframe: pd.DataFrame) -> pd.DataFrame:
-    """Derive events from stat deltas.
-
-    Detectable events:
-    - Hero switches (portrait changes)
-    - Deaths (death count increments)
-    - Kills (elim count increments)
-    - Ult gained (charge hits 100% / ready)
-    - Ult used (ready -> 0%)
-    """
     # TODO: Implement event detection
     pass
 
 
 def export_csv(dataframe: pd.DataFrame, output_path: Path) -> None:
-    """Export DataFrame to CSV."""
     output_path.parent.mkdir(parents=True, exist_ok=True)
     dataframe.to_csv(output_path, index=False)
 
 
 def export_parquet(dataframe: pd.DataFrame, output_path: Path) -> None:
-    """Export DataFrame to Parquet."""
     output_path.parent.mkdir(parents=True, exist_ok=True)
     dataframe.to_parquet(output_path, index=False)
 
 
 def process_screenshots(screenshot_paths: list[Path], output_path: Path | None = None) -> pd.DataFrame:
-    """Process multiple screenshots and optionally save to CSV.
-
-    Args:
-        screenshot_paths: List of screenshot file paths
-        output_path: Optional path to save CSV (defaults to output/scoreboard.csv)
-
-    Returns:
-        DataFrame with all extracted data
-    """
     if output_path is None:
         output_path = OUTPUT_DIR / "scoreboard.csv"
 
@@ -138,10 +93,8 @@ def process_screenshots(screenshot_paths: list[Path], output_path: Path | None =
 
 
 def main():
-    """Process all screenshots in the screenshots folder."""
     from src.utils import SCREENSHOTS_DIR
 
-    # Find all PNG screenshots (exclude "full team" which are for templates)
     screenshots = sorted([
         p for p in SCREENSHOTS_DIR.glob("*.png")
         if not p.name.startswith("full team")

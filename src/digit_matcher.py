@@ -1,8 +1,4 @@
-"""Digit template matcher for stat recognition.
-
-Uses sliding window template matching to recognize numbers from stat cells.
-Templates are loaded lazily on first use.
-"""
+"""Digit template matcher for stat recognition."""
 
 from dataclasses import dataclass
 from pathlib import Path
@@ -11,11 +7,6 @@ import cv2
 import numpy as np
 
 from .utils import TEMPLATES_DIR
-
-
-# -----------------------------------------------------------------------------
-# Core Classes
-# -----------------------------------------------------------------------------
 
 
 @dataclass
@@ -38,13 +29,7 @@ class DigitMatcher:
         self._templates_dir = templates_dir
 
     def _load_templates(self) -> dict[str, np.ndarray]:
-        """Load and preprocess digit templates (0-9).
-
-        Templates are already 4x scaled, so we only convert to binary.
-
-        Returns:
-            Dict mapping digit string ('0'-'9') to binary template.
-        """
+        """Load and preprocess digit templates (0-9)."""
         templates = {}
         digits_dir = self._templates_dir / "digits"
 
@@ -80,19 +65,13 @@ class DigitMatcher:
         if not self.templates:
             return None
 
-        # Preprocess the crop
         processed = _preprocess(crop)
-
-        # Find digit matches
         raw_matches = _match_digits(processed, self.templates)
-
-        # Apply non-max suppression
         filtered_matches = _non_max_suppression(raw_matches)
 
         if not filtered_matches:
             return None
 
-        # Convert to number string
         number_str = _matches_to_number(filtered_matches)
 
         if not number_str:
@@ -104,22 +83,8 @@ class DigitMatcher:
             return None
 
 
-# -----------------------------------------------------------------------------
-# Private Functions
-# -----------------------------------------------------------------------------
-
-
 def _preprocess(crop: np.ndarray) -> np.ndarray:
-    """Preprocess crop for template matching.
-
-    Pipeline: 4x scale -> grayscale -> CLAHE -> Otsu threshold
-
-    Args:
-        crop: BGR image
-
-    Returns:
-        Binary image (white digits on black background)
-    """
+    """Preprocess crop: 4x scale -> grayscale -> CLAHE -> Otsu threshold."""
     scaled = cv2.resize(crop, None, fx=4, fy=4, interpolation=cv2.INTER_CUBIC)
     gray = cv2.cvtColor(scaled, cv2.COLOR_BGR2GRAY)
     clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
@@ -133,23 +98,13 @@ def _match_digits(
     templates: dict[str, np.ndarray],
     threshold: float = 0.7,
 ) -> list[DigitMatch]:
-    """Find all digit matches in an image using sliding window template matching.
-
-    Args:
-        image: Preprocessed binary image
-        templates: Dict of digit -> binary template
-        threshold: Minimum confidence for a match
-
-    Returns:
-        List of DigitMatch objects (unsorted, may have overlaps)
-    """
+    """Find all digit matches using sliding window template matching."""
     matches = []
 
     for digit, template in templates.items():
         template_height, template_width = template.shape[:2]
         image_height, image_width = image.shape[:2]
 
-        # Skip if template is larger than image
         if template_height > image_height or template_width > image_width:
             continue
 
@@ -176,15 +131,7 @@ def _non_max_suppression(
     matches: list[DigitMatch],
     min_distance: int = 20,
 ) -> list[DigitMatch]:
-    """Remove overlapping matches, keeping highest confidence.
-
-    Args:
-        matches: List of digit matches
-        min_distance: Minimum X distance between matches
-
-    Returns:
-        Filtered list with overlaps removed
-    """
+    """Remove overlapping matches, keeping highest confidence."""
     if not matches:
         return []
 
@@ -205,28 +152,15 @@ def _non_max_suppression(
 
 
 def _matches_to_number(matches: list[DigitMatch]) -> str:
-    """Convert sorted matches to a number string.
-
-    Args:
-        matches: List of DigitMatch objects
-
-    Returns:
-        String representation of the detected number
-    """
+    """Convert matches to number string, sorted left-to-right."""
     sorted_matches = sorted(matches, key=lambda m: m.x)
     return "".join(m.digit for m in sorted_matches)
-
-
-# -----------------------------------------------------------------------------
-# Module-level API
-# -----------------------------------------------------------------------------
 
 
 _digit_matcher: DigitMatcher | None = None
 
 
 def get_digit_matcher() -> DigitMatcher:
-    """Get or create global digit matcher instance."""
     global _digit_matcher
     if _digit_matcher is None:
         _digit_matcher = DigitMatcher(TEMPLATES_DIR)
@@ -234,12 +168,4 @@ def get_digit_matcher() -> DigitMatcher:
 
 
 def recognize_stat(crop: np.ndarray) -> int | None:
-    """Convenience function for stat recognition.
-
-    Args:
-        crop: BGR image of a stat cell
-
-    Returns:
-        Recognized integer or None if recognition failed
-    """
     return get_digit_matcher().recognize(crop)

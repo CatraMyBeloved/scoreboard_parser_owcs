@@ -35,9 +35,6 @@ def save_crop(crop: np.ndarray, path: Path) -> None:
     cv2.imwrite(str(path), crop)
 
 
-# --- Edge Detection ---
-
-
 def detect_scoreboard_edges(
     image: np.ndarray, threshold: int = 40
 ) -> tuple[int, int]:
@@ -59,25 +56,19 @@ def detect_scoreboard_edges(
     scan_y = regions.TEAM1_ROWS[0] - 5
     row = gray[scan_y, :]
 
-    # Compute gradient (difference between adjacent pixels)
     gradient = np.diff(row.astype(np.int16))
 
-    # Find left edge: large positive gradient (dark -> bright)
     left_candidates = np.where(gradient > threshold)[0]
     if len(left_candidates) == 0:
         raise ValueError("Could not detect left edge of scoreboard")
     left_x = int(left_candidates[0])
 
-    # Find right edge: large negative gradient (bright -> dark)
     right_candidates = np.where(gradient < -threshold)[0]
     if len(right_candidates) == 0:
         raise ValueError("Could not detect right edge of scoreboard")
     right_x = int(right_candidates[-1])
 
     return left_x, right_x
-
-
-# --- Column Position Calculation ---
 
 
 def calculate_column_positions(
@@ -94,24 +85,20 @@ def calculate_column_positions(
     """
     columns = {}
 
-    # Left columns (anchored from left edge)
     x = left_edge
     for col_name in regions.LEFT_COLUMNS_ORDER:
         width = regions.LEFT_COLUMNS[col_name]
         columns[col_name] = (x, x + width)
         x += width
 
-    # Name section (fixed width, right of ult)
     name_start = left_edge + regions.LEFT_TOTAL
     name_end = name_start + regions.NAME_WIDTH
     columns["name"] = (name_start, name_end)
 
-    # Perks section (variable width, fills gap between name and stats)
     perks_start = name_end
     perks_end = right_edge - regions.REPORT_BUTTON_WIDTH - regions.RIGHT_TOTAL
     columns["perks"] = (perks_start, perks_end)
 
-    # Right columns (anchored from right edge, minus report button)
     x = right_edge - regions.REPORT_BUTTON_WIDTH
     for col_name in reversed(regions.RIGHT_COLUMNS_ORDER):
         width = regions.RIGHT_COLUMNS[col_name]
@@ -121,10 +108,6 @@ def calculate_column_positions(
     return columns
 
 
-# --- Cropping Functions ---
-
-
-# Column names available for cropping
 ALL_COLUMNS = (
     regions.LEFT_COLUMNS_ORDER + ["name", "perks"] + regions.RIGHT_COLUMNS_ORDER
 )
@@ -162,13 +145,9 @@ def crop_cell(
     if column not in columns:
         raise ValueError(f"Unknown column: {column}. Available: {list(columns.keys())}")
 
-    # Get Y position from team rows
     row_y = regions.TEAM1_ROWS[row] if team == 1 else regions.TEAM2_ROWS[row]
-
-    # Get X range from calculated columns
     x_start, x_end = columns[column]
 
-    # Crop: image[y:y+h, x:x+w]
     return image[row_y : row_y + regions.ROW_HEIGHT, x_start:x_end]
 
 
@@ -184,11 +163,9 @@ def crop_all_cells(
     Returns:
         Dict keyed by "team{t}_row{r}_{column}" -> cropped image
     """
-    # Detect edges once for all crops
     left_edge, right_edge = detect_scoreboard_edges(image)
     columns = calculate_column_positions(left_edge, right_edge)
 
-    # Determine which columns to crop
     columns_to_crop = list(columns.keys())
     if skip_perks and "perks" in columns_to_crop:
         columns_to_crop.remove("perks")
